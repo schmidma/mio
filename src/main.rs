@@ -1,22 +1,23 @@
-use std::{
-    collections::HashMap,
-    f32::consts::{FRAC_PI_2, PI},
-};
+use std::{collections::HashMap, f32::consts::PI};
 
 use bevy::prelude::*;
 use bevy_egui::EguiPlugin;
 use bevy_inspector_egui::DefaultInspectorConfigPlugin;
-use bevy_inspector_egui_rapier::InspectableRapierPlugin;
-use bevy_rapier3d::{prelude::*, rapier::prelude::ColliderBuilder};
+// use bevy_inspector_egui_rapier::InspectableRapierPlugin;
+use bevy_rapier3d::prelude::*;
+use bevy_stl::StlPlugin;
 use color_eyre::{eyre::WrapErr, Result};
 use field_dimensions::FieldDimensions;
-use inspector_ui::{InspectorSettings, InspectorUiPlugin};
-use pan_orbit_camera::{pan_orbit_camera, PanOrbitCamera};
+// use inspector_ui::{InspectorSettings, InspectorUiPlugin};
+
+use smooth_bevy_cameras::{
+    controllers::orbit::{OrbitCameraBundle, OrbitCameraController, OrbitCameraPlugin},
+    LookTransformPlugin,
+};
 use urdf_rs::{JointType, Robot};
 
 mod field_dimensions;
 mod inspector_ui;
-mod pan_orbit_camera;
 
 fn main() -> Result<()> {
     App::new()
@@ -27,11 +28,12 @@ fn main() -> Result<()> {
             //| DebugRenderMode::RIGID_BODY_AXES,
             ..Default::default()
         })
+        .add_plugin(StlPlugin)
         .add_plugin(EguiPlugin)
         .add_plugin(DefaultInspectorConfigPlugin)
-        .add_plugin(InspectorUiPlugin)
-        .add_plugin(InspectableRapierPlugin)
-        .insert_resource(InspectorSettings { enabled: true })
+        //.add_plugin(InspectorUiPlugin)
+        //.add_plugin(InspectableRapierPlugin)
+        //.insert_resource(InspectorSettings { enabled: true })
         .insert_resource(RobotSpecification {
             urdf: urdf_rs::read_file("assets/NAO.urdf")
                 .wrap_err("Failed to load urdf specification for NAO")?,
@@ -41,10 +43,19 @@ fn main() -> Result<()> {
             ..Default::default()
         })
         .insert_resource(FieldDimensions::default())
-        .add_startup_system(setup_camera)
+        .add_plugin(LookTransformPlugin)
+        .add_plugin(OrbitCameraPlugin::default())
+        .add_startup_system(spawn_camera)
         .add_startup_system(setup_field)
-        .add_startup_system(setup_robot)
-        .add_system(pan_orbit_camera)
+        .add_startup_systems(
+            (
+                setup_links,
+                apply_system_buffers,
+                setup_joints,
+                add_link_visuals,
+            )
+                .chain(),
+        )
         .run();
     Ok(())
 }
@@ -52,24 +63,21 @@ fn main() -> Result<()> {
 #[derive(Component)]
 struct MainCamera;
 
-fn setup_camera(mut commands: Commands) {
-    let initial_camera_position = Vec3::new(0.0, -10.0, 4.0);
+fn spawn_camera(mut commands: Commands) {
     commands
-        .spawn(Camera3dBundle {
-            transform: Transform::from_translation(initial_camera_position)
-                .looking_at(Vec3::ZERO, Vec3::Y),
-            ..Default::default()
-        })
-        .insert(PanOrbitCamera {
-            radius: initial_camera_position.length(),
-            ..Default::default()
-        })
-        .insert(MainCamera);
+        .spawn(Camera3dBundle::default())
+        .insert(OrbitCameraBundle::new(
+            OrbitCameraController::default(),
+            Vec3::new(-2.0, 5.0, 5.0),
+            Vec3::new(0., 0., 0.),
+            Vec3::Y,
+        ));
 }
 
 fn setup_field(
     mut commands: Commands,
     field_dimensions: Res<FieldDimensions>,
+    server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -81,8 +89,8 @@ fn setup_field(
         .spawn(PbrBundle {
             mesh: meshes.add(Mesh::from(shape::Quad::new(ground_size))),
             material: materials.add(StandardMaterial {
-                base_color: Color::GREEN,
-                perceptual_roughness: 0.99,
+                base_color: Color::rgb(0.0, 0.2, 0.0),
+                perceptual_roughness: 0.8,
                 ..Default::default()
             }),
             transform: Transform::from_xyz(0.0, 0.0, -1.0),
@@ -99,23 +107,29 @@ fn setup_field(
     commands
         .spawn(RigidBody::Dynamic)
         .insert(Name::new("ball"))
+        .insert(PbrBundle {
+            mesh: meshes.add(Mesh::from(shape::UVSphere {
+                radius: field_dimensions.ball_radius,
+                sectors: 30,
+                stacks: 30,
+            })),
+            material: materials.add(StandardMaterial {
+                base_color: Color::WHITE,
+                base_color_texture: Some(server.load("ball/football_base_color.jpg")),
+                metallic: 0.,
+                perceptual_roughness: 0.4,
+                normal_map_texture: Some(server.load("ball/football_normal.jpg")),
+                ..Default::default()
+            }),
+            ..Default::default()
+        })
         .insert(Collider::ball(field_dimensions.ball_radius))
         .insert(CollisionGroups::new(Group::GROUP_3, Group::ALL))
         .insert(Restitution::coefficient(0.7))
         .insert(TransformBundle::from(Transform::from_xyz(0.0, 0.0, 4.0)));
 
-    const HALF_SIZE: f32 = 10.0;
     commands.spawn(DirectionalLightBundle {
         directional_light: DirectionalLight {
-            shadow_projection: OrthographicProjection {
-                left: -HALF_SIZE,
-                right: HALF_SIZE,
-                bottom: -HALF_SIZE,
-                top: HALF_SIZE,
-                near: -10.0 * HALF_SIZE,
-                far: 10.0 * HALF_SIZE,
-                ..default()
-            },
             shadows_enabled: true,
             ..default()
         },
@@ -133,68 +147,101 @@ struct RobotSpecification {
     urdf: Robot,
 }
 
-fn setup_robot(mut commands: Commands, robot_specification: Res<RobotSpecification>) {
-    let mut links = HashMap::new();
+#[derive(Component)]
+struct NaoRobot;
 
-    for link in &robot_specification.urdf.links {
-        // let origin = link.inertial.origin.xyz;
-        // let origin = Vec3::new(origin[0] as f32, origin[1] as f32, origin[2] as f32);
-        // let roll_pitch_yaw = link.inertial.origin.rpy;
-        // let roll_pitch_yaw = Quat::from_euler(
-        //     EulerRot::XYZ,
-        //     roll_pitch_yaw[0] as f32,
-        //     roll_pitch_yaw[1] as f32,
-        //     roll_pitch_yaw[2] as f32,
-        // );
+#[derive(Component)]
+struct NaoLink {
+    pub name: String,
+}
 
-        let mut entity = commands.spawn(Name::new(link.name.clone()));
-        entity
-            .insert(RigidBody::Dynamic)
-            .insert(TransformBundle::default());
+fn add_link_visuals(
+    mut commands: Commands,
+    server: Res<AssetServer>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    robot_specification: Res<RobotSpecification>,
+    links: Query<(Entity, &NaoLink)>,
+) {
+    let mut link_to_entity = HashMap::new();
+    for (entity, nao_link) in links.iter() {
+        link_to_entity.insert(&nao_link.name, entity);
+    }
 
-        if !link.collision.is_empty() {
-            let shapes = link
-                .collision
-                .iter()
-                .map(|collision| {
-                    let collider = match &collision.geometry {
-                        urdf_rs::Geometry::Box { size } => Collider::cuboid(
-                            size[0] as f32 / 2.0,
-                            size[1] as f32 / 2.0,
-                            size[2] as f32 / 2.0,
-                        ),
-                        urdf_rs::Geometry::Cylinder { radius, length } => {
-                            Collider::cylinder(*length as f32 / 2.0, *radius as f32)
-                        }
-                        urdf_rs::Geometry::Sphere { radius } => Collider::ball(*radius as f32),
-                        _ => todo!(),
-                    };
-                    let position = collision.origin.xyz;
-                    let position =
-                        Vec3::new(position[0] as f32, position[1] as f32, position[2] as f32);
-                    let rotation = collision.origin.rpy;
-                    let rotation = Quat::from_euler(
-                        EulerRot::ZYX,
-                        rotation[2] as f32,
-                        rotation[1] as f32,
-                        rotation[0] as f32,
-                    );
-                    (position, rotation, collider)
-                })
-                .collect();
-            entity
-                .insert(Collider::compound(shapes))
-                .insert(CollisionGroups::new(
-                    Group::GROUP_2,
-                    Group::GROUP_1 | Group::GROUP_3,
-                ));
+    for link in robot_specification.urdf.links.iter() {
+        let current_link = link_to_entity[&link.name];
+
+        if !link.visual.is_empty() {
+            link.visual.iter().for_each(|visual| {
+                let (mesh, scale): (Handle<Mesh>, _) = match &visual.geometry {
+                    urdf_rs::Geometry::Mesh { filename, scale } => (
+                        server.load(filename),
+                        scale
+                            .map(|vec| Vec3::new(vec[0] as f32, vec[1] as f32, vec[2] as f32))
+                            .unwrap_or(Vec3::ONE),
+                    ),
+                    _ => (Default::default(), Vec3::ONE),
+                };
+                let material: Handle<StandardMaterial> = match &visual.material {
+                    Some(urdf_rs::Material {
+                        texture: Some(urdf_rs::Texture { filename }),
+                        ..
+                    }) => server.load(filename),
+                    Some(urdf_rs::Material {
+                        color: Some(urdf_rs::Color { rgba }),
+                        ..
+                    }) => materials.add(
+                        Color::rgba(
+                            rgba.0[0] as f32,
+                            rgba.0[1] as f32,
+                            rgba.0[2] as f32,
+                            rgba.0[3] as f32,
+                        )
+                        .into(),
+                    ),
+                    _ => materials.add(Color::rgb(0.3, 0.2, 0.8).into()),
+                };
+
+                let position = visual.origin.xyz;
+                let rotation = visual.origin.rpy;
+
+                let origin =
+                    Transform::from_xyz(position[0] as f32, position[1] as f32, position[2] as f32)
+                        .with_rotation(Quat::from_euler(
+                            EulerRot::ZYX,
+                            rotation[2] as f32,
+                            rotation[1] as f32,
+                            rotation[0] as f32,
+                        ))
+                        .with_scale(scale);
+
+                let visual = commands
+                    .spawn(PbrBundle {
+                        mesh,
+                        material,
+                        transform: origin,
+                        ..Default::default()
+                    })
+                    .id();
+                commands.entity(current_link).add_child(visual);
+            });
         }
-        links.insert(link.name.clone(), entity.id());
+    }
+}
+
+fn setup_joints(
+    mut commands: Commands,
+    robot_specification: Res<RobotSpecification>,
+    links: Query<(Entity, &NaoLink)>,
+) {
+    let mut link_to_entity = HashMap::new();
+    for (entity, nao_link) in links.iter() {
+        link_to_entity.insert(&nao_link.name, entity);
     }
 
     for joint in robot_specification.urdf.joints.iter() {
-        let parent_id = links[&joint.parent.link];
-        let child_id = links[&joint.child.link];
+        let parent_id = link_to_entity[&joint.parent.link];
+        let child_id = link_to_entity[&joint.child.link];
+
         commands.entity(parent_id).add_child(child_id);
         let translation = joint.origin.xyz;
         let translation = Vec3::new(
@@ -248,5 +295,65 @@ fn setup_robot(mut commands: Commands, robot_specification: Res<RobotSpecificati
                 child.insert(ImpulseJoint::new(parent_id, joint));
             }
         };
+    }
+}
+
+fn setup_links(
+    mut commands: Commands,
+    server: Res<AssetServer>,
+    robot_specification: Res<RobotSpecification>,
+) {
+    for link in &robot_specification.urdf.links {
+        let name = link.name.clone();
+
+        let shapes: Vec<_> = link
+            .collision
+            .iter()
+            .map(|collision| {
+                let collider = match &collision.geometry {
+                    urdf_rs::Geometry::Box { size } => Collider::cuboid(
+                        size[0] as f32 / 2.0,
+                        size[1] as f32 / 2.0,
+                        size[2] as f32 / 2.0,
+                    ),
+                    urdf_rs::Geometry::Cylinder { radius, length } => {
+                        Collider::cylinder(*length as f32 / 2.0, *radius as f32)
+                    }
+                    urdf_rs::Geometry::Sphere { radius } => Collider::ball(*radius as f32),
+                    urdf_rs::Geometry::Capsule { radius, length } => {
+                        Collider::capsule_z(*length as f32 / 2.0, *radius as f32)
+                    }
+                    urdf_rs::Geometry::Mesh { filename, .. } => {
+                        let _mesh: Handle<Mesh> = server.load(filename);
+                        todo!();
+                    }
+                };
+                let position = collision.origin.xyz;
+                let position =
+                    Vec3::new(position[0] as f32, position[1] as f32, position[2] as f32);
+                let rotation = collision.origin.rpy;
+                let rotation = Quat::from_euler(
+                    EulerRot::ZYX,
+                    rotation[2] as f32,
+                    rotation[1] as f32,
+                    rotation[0] as f32,
+                );
+                (position, rotation, collider)
+            })
+            .collect();
+
+        let mut link = commands.spawn((
+            NaoLink { name },
+            RigidBody::Dynamic,
+            TransformBundle::default(),
+            VisibilityBundle::default(),
+        ));
+        if shapes.len() > 0 {
+            link.insert(Collider::compound(shapes))
+                .insert(CollisionGroups::new(
+                    Group::GROUP_2,
+                    Group::GROUP_1 | Group::GROUP_3,
+                ));
+        }
     }
 }
