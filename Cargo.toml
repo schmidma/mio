@@ -17,9 +17,6 @@ color-eyre = "0.6.2"
 egui_dock = "0.5.0"
 iyes_loopless = "0.9.1"
 urdf-rs = "0.7.1"
-bevy_fly_camera = "0.10.0"
-smooth-bevy-cameras = "0.8.0"
-k = "0.30.0"
 
 [profile.dev.package."*"]
 opt-level = 3

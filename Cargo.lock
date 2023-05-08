@@ -807,15 +807,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bevy_fly_camera"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6217548790087c7b79675f87397ea90d27158edb4d533cc428170ca963db2a2"
-dependencies = [
- "bevy 0.10.1",
-]
-
-[[package]]
 name = "bevy_gilrs"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3144,20 +3135,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "k"
-version = "0.30.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7968999882563a8a758e05a2c87da8b3dcbf82e43f80f7266778ed0efd713dd"
-dependencies = [
- "nalgebra 0.30.1",
- "parking_lot",
- "simba 0.7.3",
- "thiserror",
- "tracing",
- "urdf-rs",
-]
-
-[[package]]
 name = "khronos-egl"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3398,15 +3375,12 @@ dependencies = [
  "bevy-inspector-egui 0.18.3",
  "bevy-inspector-egui-rapier",
  "bevy_egui 0.20.3",
- "bevy_fly_camera",
  "bevy_rapier3d 0.21.0",
  "bevy_reflect 0.10.1",
  "bevy_stl",
  "color-eyre",
  "egui_dock",
  "iyes_loopless",
- "k",
- "smooth-bevy-cameras",
  "urdf-rs",
 ]
 
@@ -3464,22 +3438,6 @@ dependencies = [
  "termcolor",
  "thiserror",
  "unicode-xid",
-]
-
-[[package]]
-name = "nalgebra"
-version = "0.30.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4fb2d0de08694bed883320212c18ee3008576bfe8c306f4c3c4a58b4876998be"
-dependencies = [
- "approx",
- "matrixmultiply",
- "nalgebra-macros 0.1.0",
- "num-complex",
- "num-rational 0.4.1",
- "num-traits",
- "simba 0.7.3",
- "typenum",
 ]
 
 [[package]]
@@ -4458,16 +4416,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a507befe795404456341dfab10cef66ead4c041f62b8b11bbb92bffe5d0953e0"
 dependencies = [
  "serde",
-]
-
-[[package]]
-name = "smooth-bevy-cameras"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9aeb233071a219a5eb6357e2e48a284ba891da6b8ed92c1c26774fe184146af6"
-dependencies = [
- "approx",
- "bevy 0.10.1",
 ]
 
 [[package]]

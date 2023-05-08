@@ -10,14 +10,12 @@ use color_eyre::{eyre::WrapErr, Result};
 use field_dimensions::FieldDimensions;
 // use inspector_ui::{InspectorSettings, InspectorUiPlugin};
 
-use smooth_bevy_cameras::{
-    controllers::orbit::{OrbitCameraBundle, OrbitCameraController, OrbitCameraPlugin},
-    LookTransformPlugin,
-};
+use pan_orbit_camera::PanOrbitCamera;
 use urdf_rs::{JointType, Robot};
 
 mod field_dimensions;
 mod inspector_ui;
+mod pan_orbit_camera;
 
 fn main() -> Result<()> {
     App::new()
@@ -31,6 +29,7 @@ fn main() -> Result<()> {
         .add_plugin(StlPlugin)
         .add_plugin(EguiPlugin)
         .add_plugin(DefaultInspectorConfigPlugin)
+        .add_plugin(PanOrbitCamera::default())
         //.add_plugin(InspectorUiPlugin)
         //.add_plugin(InspectableRapierPlugin)
         //.insert_resource(InspectorSettings { enabled: true })
@@ -43,9 +42,6 @@ fn main() -> Result<()> {
             ..Default::default()
         })
         .insert_resource(FieldDimensions::default())
-        .add_plugin(LookTransformPlugin)
-        .add_plugin(OrbitCameraPlugin::default())
-        .add_startup_system(spawn_camera)
         .add_startup_system(setup_field)
         .add_startup_systems(
             (
@@ -58,20 +54,6 @@ fn main() -> Result<()> {
         )
         .run();
     Ok(())
-}
-
-#[derive(Component)]
-struct MainCamera;
-
-fn spawn_camera(mut commands: Commands) {
-    commands
-        .spawn(Camera3dBundle::default())
-        .insert(OrbitCameraBundle::new(
-            OrbitCameraController::default(),
-            Vec3::new(-2.0, 5.0, 5.0),
-            Vec3::new(0., 0., 0.),
-            Vec3::Y,
-        ));
 }
 
 fn setup_field(
@@ -89,8 +71,10 @@ fn setup_field(
         .spawn(PbrBundle {
             mesh: meshes.add(Mesh::from(shape::Quad::new(ground_size))),
             material: materials.add(StandardMaterial {
-                base_color: Color::rgb(0.0, 0.2, 0.0),
                 perceptual_roughness: 0.8,
+                base_color_texture: Some(server.load("textures/field_quarter_base_color.jpg")),
+                occlusion_texture: Some(server.load("textures/field_quarter_occlusion.jpg")),
+                normal_map_texture: Some(server.load("textures/field_quarter_normal.jpg")),
                 ..Default::default()
             }),
             transform: Transform::from_xyz(0.0, 0.0, -1.0),
@@ -198,7 +182,7 @@ fn add_link_visuals(
                         )
                         .into(),
                     ),
-                    _ => materials.add(Color::rgb(0.3, 0.2, 0.8).into()),
+                    _ => materials.add(Color::rgb(1., 1., 1.).into()),
                 };
 
                 let position = visual.origin.xyz;
@@ -348,7 +332,7 @@ fn setup_links(
             TransformBundle::default(),
             VisibilityBundle::default(),
         ));
-        if shapes.len() > 0 {
+        if !shapes.is_empty() {
             link.insert(Collider::compound(shapes))
                 .insert(CollisionGroups::new(
                     Group::GROUP_2,
