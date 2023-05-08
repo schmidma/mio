@@ -2,14 +2,13 @@ use std::{collections::HashMap, f32::consts::PI};
 
 use bevy::prelude::*;
 use bevy_egui::EguiPlugin;
-use bevy_inspector_egui::DefaultInspectorConfigPlugin;
-// use bevy_inspector_egui_rapier::InspectableRapierPlugin;
+use bevy_inspector_egui::{quick::WorldInspectorPlugin};
 use bevy_rapier3d::prelude::*;
 use bevy_stl::StlPlugin;
 use color_eyre::{eyre::WrapErr, Result};
 use field_dimensions::FieldDimensions;
-// use inspector_ui::{InspectorSettings, InspectorUiPlugin};
 
+use nalgebra::{Matrix3, SymmetricEigen, UnitQuaternion};
 use pan_orbit_camera::PanOrbitCamera;
 use urdf_rs::{JointType, Robot};
 
@@ -28,11 +27,11 @@ fn main() -> Result<()> {
         })
         .add_plugin(StlPlugin)
         .add_plugin(EguiPlugin)
-        .add_plugin(DefaultInspectorConfigPlugin)
+        .add_plugin(WorldInspectorPlugin::new())
         .add_plugin(PanOrbitCamera::default())
-        //.add_plugin(InspectorUiPlugin)
+        // .add_plugin(InspectorUiPlugin)
+        // .insert_resource(InspectorSettings { enabled: true })
         //.add_plugin(InspectableRapierPlugin)
-        //.insert_resource(InspectorSettings { enabled: true })
         .insert_resource(RobotSpecification {
             urdf: urdf_rs::read_file("assets/NAO.urdf")
                 .wrap_err("Failed to load urdf specification for NAO")?,
@@ -86,7 +85,8 @@ fn setup_field(
             0.01,
         ))
         .insert(CollisionGroups::new(Group::GROUP_1, Group::ALL))
-        .insert(Name::new("field"));
+        .insert(Name::new("field"))
+        .insert(RigidBody::Fixed);
 
     commands
         .spawn(RigidBody::Dynamic)
@@ -110,7 +110,7 @@ fn setup_field(
         .insert(Collider::ball(field_dimensions.ball_radius))
         .insert(CollisionGroups::new(Group::GROUP_3, Group::ALL))
         .insert(Restitution::coefficient(0.7))
-        .insert(TransformBundle::from(Transform::from_xyz(0.0, 0.0, 4.0)));
+        .insert(TransformBundle::from(Transform::from_xyz(0.03, 0.0, 4.0)));
 
     commands.spawn(DirectionalLightBundle {
         directional_light: DirectionalLight {
@@ -143,6 +143,7 @@ fn add_link_visuals(
     mut commands: Commands,
     server: Res<AssetServer>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut meshes: ResMut<Assets<Mesh>>,
     robot_specification: Res<RobotSpecification>,
     links: Query<(Entity, &NaoLink)>,
 ) {
@@ -205,6 +206,7 @@ fn add_link_visuals(
                         transform: origin,
                         ..Default::default()
                     })
+                    .insert(RigidBody::Dynamic)
                     .id();
                 commands.entity(current_link).add_child(visual);
             });
@@ -326,12 +328,52 @@ fn setup_links(
             })
             .collect();
 
+        let inertial = &link.inertial;
+        let center_of_mass = Vec3::new(
+            inertial.origin.xyz[0] as f32,
+            inertial.origin.xyz[1] as f32,
+            inertial.origin.xyz[2] as f32,
+        );
+
+        let i = &inertial.inertia;
+        let inertia_matrix = Matrix3::new(
+            i.ixx as f32, i.ixy as f32, i.ixz as f32, //
+            i.ixy as f32, i.iyy as f32, i.iyz as f32, //
+            i.ixz as f32, i.iyz as f32, i.izz as f32, //
+        );
+
+        let mass_properties = if inertia_matrix != Matrix3::zeros() {
+            let evd = SymmetricEigen::new(inertia_matrix);
+
+            let principal_vector = Vec3::new(evd.eigenvalues[0], evd.eigenvalues[1], evd.eigenvalues[2]);
+            assert!(evd.eigenvectors.is_orthogonal(0.00001), "rotation matrix not orthogonal");
+            let quat = UnitQuaternion::from_basis_unchecked(&[evd.eigenvectors.column(0).into(), evd.eigenvectors.column(1).into(), evd.eigenvectors.column(2).into()]);
+            let axis = quat.axis().unwrap();
+            let axis = Vec3::new(axis[0], axis[1], axis[2]);
+            let rotation = quat.angle();
+            let quat = Quat::from_axis_angle(axis, rotation);
+
+            Some(ColliderMassProperties::MassProperties(MassProperties {
+                local_center_of_mass: center_of_mass,
+                mass: inertial.mass.value as f32,
+                principal_inertia_local_frame: quat,
+                principal_inertia: principal_vector,
+            }))
+        } else {
+            None
+        };
+
         let mut link = commands.spawn((
             NaoLink { name },
-            RigidBody::Dynamic,
             TransformBundle::default(),
             VisibilityBundle::default(),
         ));
+        if inertial.mass.value > 0.0 {
+            link.insert((RigidBody::Fixed, ColliderMassProperties::Mass(inertial.mass.value as f32)));
+        }
+        if let Some(mass_properties) = mass_properties {
+            link.insert(mass_properties);
+        }
         if !shapes.is_empty() {
             link.insert(Collider::compound(shapes))
                 .insert(CollisionGroups::new(
